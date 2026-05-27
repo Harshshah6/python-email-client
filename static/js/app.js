@@ -42,6 +42,23 @@ document.addEventListener('DOMContentLoaded', () => {
         'trash': 'Trash'
     };
 
+    // Stale-While-Revalidate Cache
+    let emailCache = {
+        inbox: null,
+        starred: null,
+        sent: null,
+        trash: null
+    };
+
+    // Helper to invalidate other caches on actions
+    function invalidateOtherCaches(excludeFolder) {
+        Object.keys(emailCache).forEach(folder => {
+            if (folder !== excludeFolder) {
+                emailCache[folder] = null;
+            }
+        });
+    }
+
     // --- Notifications ---
     function showNotification(message, type = 'info') {
         const container = document.getElementById('notification-container');
@@ -92,18 +109,35 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Load Emails ---
     async function loadEmails() {
-        emailList.innerHTML = `
-            <div class="skeleton-item"></div>
-            <div class="skeleton-item"></div>
-            <div class="skeleton-item"></div>
-            <div class="skeleton-item"></div>
-        `;
         showPanel('list');
         
+        if (emailCache[currentFolder]) {
+            // 1. Instantly render the stale/cached data
+            emailsData = emailCache[currentFolder];
+            renderEmailList();
+            
+            // 2. Silently fetch from server in background to revalidate
+            loadEmailsBackground();
+        } else {
+            // 1. No cache, show loading skeleton
+            emailList.innerHTML = `
+                <div class="skeleton-item"></div>
+                <div class="skeleton-item"></div>
+                <div class="skeleton-item"></div>
+                <div class="skeleton-item"></div>
+            `;
+            
+            // 2. Fetch from server blocking
+            await loadEmailsFromServer();
+        }
+    }
+
+    async function loadEmailsFromServer() {
         try {
             const data = await window.pywebview.api.get_emails(currentFolder);
             
             if (data.success) {
+                emailCache[currentFolder] = data.emails;
                 emailsData = data.emails;
                 renderEmailList();
                 showNotification(`${folderNames[currentFolder]} updated`, 'info');
@@ -113,6 +147,25 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch (err) {
             showNotification('Error fetching emails', 'error');
             emailList.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-secondary)">Error loading emails.</div>';
+        }
+    }
+
+    async function loadEmailsBackground() {
+        try {
+            const data = await window.pywebview.api.get_emails(currentFolder);
+            
+            if (data.success) {
+                emailCache[currentFolder] = data.emails;
+                
+                // Only render if the user hasn't switched folders in the background
+                const activeNav = document.querySelector('.sidebar-nav .nav-item.active');
+                if (activeNav && activeNav.getAttribute('data-folder') === currentFolder) {
+                    emailsData = data.emails;
+                    renderEmailList();
+                }
+            }
+        } catch (err) {
+            console.error('Background refresh failed:', err);
         }
     }
     
@@ -164,9 +217,16 @@ document.addEventListener('DOMContentLoaded', () => {
                         starBtn.title = newStarredState ? 'Unstar' : 'Star';
                         showNotification(newStarredState ? 'Email starred' : 'Email unstarred', 'success');
                         
+                        // Update cache for current folder
+                        emailCache[currentFolder] = emailsData;
+                        
+                        // Invalidate other folders so they sync star states
+                        invalidateOtherCaches(currentFolder);
+                        
                         // If we are currently in Starred folder, remove from list if unstarred
                         if (currentFolder === 'starred' && !newStarredState) {
                             emailsData = emailsData.filter(item => item.id !== email.id);
+                            emailCache['starred'] = emailsData;
                             renderEmailList(searchInput.value.toLowerCase().trim());
                         }
                     } else {
@@ -210,6 +270,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 .then(res => {
                     if (res.success) {
                         email.unread = false;
+                        
+                        // Update cache & element classes
+                        emailCache[currentFolder] = emailsData;
+                        invalidateOtherCaches(currentFolder);
+                        
                         const el = emailList.querySelector(`.email-item[data-id="${email.id}"]`);
                         if (el) el.classList.remove('unread');
                     }
@@ -259,6 +324,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 detailStarBtn.title = newStarredState ? 'Unstar' : 'Star';
                 showNotification(newStarredState ? 'Email starred' : 'Email unstarred', 'success');
                 
+                // Update in cache
+                emailCache[currentFolder] = emailsData;
+                invalidateOtherCaches(currentFolder);
+                
                 // Update in list view as well
                 const listStar = emailList.querySelector(`.email-item[data-id="${currentEmailId}"] .email-item-star`);
                 if (listStar) {
@@ -269,6 +338,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 // If in starred folder and unstarred, go back to list
                 if (currentFolder === 'starred' && !newStarredState) {
                     emailsData = emailsData.filter(item => item.id !== currentEmailId);
+                    emailCache['starred'] = emailsData;
                     showPanel('list');
                     renderEmailList(searchInput.value.toLowerCase().trim());
                 }
@@ -290,6 +360,11 @@ document.addEventListener('DOMContentLoaded', () => {
             const res = await window.pywebview.api.mark_as_read(currentEmailId, currentFolder, false);
             if (res.success) {
                 email.unread = true;
+                
+                // Update caches
+                emailCache[currentFolder] = emailsData;
+                invalidateOtherCaches(currentFolder);
+                
                 showNotification('Email marked as unread', 'success');
                 showPanel('list');
                 renderEmailList(searchInput.value.toLowerCase().trim());
@@ -314,8 +389,16 @@ document.addEventListener('DOMContentLoaded', () => {
             
             if (data.success) {
                 showNotification('Email deleted successfully', 'success');
+                
+                // Remove from local data and update folder cache
+                emailsData = emailsData.filter(item => item.id !== currentEmailId);
+                emailCache[currentFolder] = emailsData;
+                
+                // Invalidate all other folder caches since Trash and lists changed
+                invalidateOtherCaches(currentFolder);
+                
                 showPanel('list');
-                loadEmails();
+                renderEmailList(searchInput.value.toLowerCase().trim());
             } else {
                 showNotification(data.message || 'Failed to delete email', 'error');
             }
@@ -333,6 +416,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch(e) {}
         
         emailsData = [];
+        emailCache = { inbox: null, starred: null, sent: null, trash: null };
         emailList.innerHTML = '';
         loginForm.reset();
         switchMainView(loginView);
@@ -370,6 +454,10 @@ document.addEventListener('DOMContentLoaded', () => {
             
             if (data.success) {
                 showNotification('Email sent successfully!', 'success');
+                
+                // Invalidate Sent folder cache so it reloads on switch
+                emailCache['sent'] = null;
+                
                 composeModal.classList.remove('active');
                 composeForm.reset();
             } else {
@@ -398,7 +486,11 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     // --- Utilities ---
-    refreshBtn.addEventListener('click', loadEmails);
+    // Clicking refresh forces a hard-reload (clears active folder cache)
+    refreshBtn.addEventListener('click', () => {
+        emailCache[currentFolder] = null;
+        loadEmails();
+    });
 
     function switchMainView(view) {
         document.querySelectorAll('.view').forEach(el => el.classList.remove('active'));
@@ -458,6 +550,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // Modern harmonious color palette for avatars
     function getAvatarColor(char) {
         const colors = ['#f87171', '#fb923c', '#fbbf24', '#a3e635', '#34d399', '#2dd4bf', '#38bdf8', '#818cf8', '#a78bfa', '#f472b6', '#fb7185'];
         if (!char) return colors[0];
