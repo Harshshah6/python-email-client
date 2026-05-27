@@ -20,6 +20,8 @@ document.addEventListener('DOMContentLoaded', () => {
     const detailAvatar = document.getElementById('detail-avatar');
     const detailDate = document.getElementById('detail-date');
     const detailIframe = document.getElementById('detail-iframe');
+    const detailStarBtn = document.getElementById('detail-star-btn');
+    const detailUnreadBtn = document.getElementById('detail-unread-btn');
     
     const composeModal = document.getElementById('compose-modal');
     const composeBtn = document.getElementById('compose-btn');
@@ -32,6 +34,13 @@ document.addEventListener('DOMContentLoaded', () => {
     
     let emailsData = [];
     let currentEmailId = null;
+    let currentFolder = 'inbox';
+    const folderNames = {
+        'inbox': 'Inbox',
+        'starred': 'Starred',
+        'sent': 'Sent Mail',
+        'trash': 'Trash'
+    };
 
     // --- Notifications ---
     function showNotification(message, type = 'info') {
@@ -92,12 +101,12 @@ document.addEventListener('DOMContentLoaded', () => {
         showPanel('list');
         
         try {
-            const data = await window.pywebview.api.get_emails();
+            const data = await window.pywebview.api.get_emails(currentFolder);
             
             if (data.success) {
                 emailsData = data.emails;
                 renderEmailList();
-                showNotification('Inbox updated', 'info');
+                showNotification(`${folderNames[currentFolder]} updated`, 'info');
             } else {
                 showNotification(data.message || 'Failed to fetch emails', 'error');
             }
@@ -116,7 +125,7 @@ document.addEventListener('DOMContentLoaded', () => {
         );
 
         if (filteredEmails.length === 0) {
-            emailList.innerHTML = '<div style="padding:2rem;text-align:center;color:var(--text-secondary)">No emails found.</div>';
+            emailList.innerHTML = `<div style="padding:2rem;text-align:center;color:var(--text-secondary)">No emails found in ${folderNames[currentFolder]}.</div>`;
             return;
         }
         
@@ -126,8 +135,12 @@ document.addEventListener('DOMContentLoaded', () => {
             const color = getAvatarColor(initial);
 
             const div = document.createElement('div');
-            div.className = 'email-item';
+            div.className = `email-item ${email.unread ? 'unread' : ''}`;
+            div.setAttribute('data-id', email.id);
             div.innerHTML = `
+                <div class="email-item-star ${email.starred ? 'starred' : ''}" title="${email.starred ? 'Unstar' : 'Star'}">
+                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"></polygon></svg>
+                </div>
                 <div class="email-item-avatar" style="background-color: ${color}">${initial}</div>
                 <div class="email-item-content">
                     <div class="email-sender">
@@ -137,6 +150,33 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="email-subject">${escapeHTML(email.subject)}</div>
                 </div>
             `;
+
+            // Star toggle listener in list view
+            const starBtn = div.querySelector('.email-item-star');
+            starBtn.addEventListener('click', async (e) => {
+                e.stopPropagation(); // prevent opening details view
+                const newStarredState = !email.starred;
+                try {
+                    const res = await window.pywebview.api.toggle_star_email(email.id, currentFolder, newStarredState);
+                    if (res.success) {
+                        email.starred = newStarredState;
+                        starBtn.classList.toggle('starred', newStarredState);
+                        starBtn.title = newStarredState ? 'Unstar' : 'Star';
+                        showNotification(newStarredState ? 'Email starred' : 'Email unstarred', 'success');
+                        
+                        // If we are currently in Starred folder, remove from list if unstarred
+                        if (currentFolder === 'starred' && !newStarredState) {
+                            emailsData = emailsData.filter(item => item.id !== email.id);
+                            renderEmailList(searchInput.value.toLowerCase().trim());
+                        }
+                    } else {
+                        showNotification('Failed to update star', 'error');
+                    }
+                } catch (err) {
+                    showNotification('Error toggling star', 'error');
+                }
+            });
+
             div.addEventListener('click', () => {
                 showEmailDetail(email, senderName, initial, color);
             });
@@ -159,6 +199,23 @@ document.addEventListener('DOMContentLoaded', () => {
         
         detailAvatar.textContent = initial;
         detailAvatar.style.backgroundColor = color;
+        
+        // Toggle active star state
+        detailStarBtn.classList.toggle('starred', email.starred);
+        detailStarBtn.title = email.starred ? 'Unstar' : 'Star';
+        
+        // Auto mark as read if unread
+        if (email.unread) {
+            window.pywebview.api.mark_as_read(email.id, currentFolder, true)
+                .then(res => {
+                    if (res.success) {
+                        email.unread = false;
+                        const el = emailList.querySelector(`.email-item[data-id="${email.id}"]`);
+                        if (el) el.classList.remove('unread');
+                    }
+                })
+                .catch(err => console.error("Error marking read:", err));
+        }
         
         // Use iframe to render HTML safely with a white background
         const doc = detailIframe.contentWindow.document;
@@ -187,6 +244,63 @@ document.addEventListener('DOMContentLoaded', () => {
         showPanel('list');
     });
 
+    // Star Toggle in Detail View
+    detailStarBtn.addEventListener('click', async () => {
+        if (!currentEmailId) return;
+        const email = emailsData.find(e => e.id === currentEmailId);
+        if (!email) return;
+        
+        const newStarredState = !email.starred;
+        try {
+            const res = await window.pywebview.api.toggle_star_email(currentEmailId, currentFolder, newStarredState);
+            if (res.success) {
+                email.starred = newStarredState;
+                detailStarBtn.classList.toggle('starred', newStarredState);
+                detailStarBtn.title = newStarredState ? 'Unstar' : 'Star';
+                showNotification(newStarredState ? 'Email starred' : 'Email unstarred', 'success');
+                
+                // Update in list view as well
+                const listStar = emailList.querySelector(`.email-item[data-id="${currentEmailId}"] .email-item-star`);
+                if (listStar) {
+                    listStar.classList.toggle('starred', newStarredState);
+                    listStar.title = newStarredState ? 'Unstar' : 'Star';
+                }
+                
+                // If in starred folder and unstarred, go back to list
+                if (currentFolder === 'starred' && !newStarredState) {
+                    emailsData = emailsData.filter(item => item.id !== currentEmailId);
+                    showPanel('list');
+                    renderEmailList(searchInput.value.toLowerCase().trim());
+                }
+            } else {
+                showNotification('Failed to update star state', 'error');
+            }
+        } catch (err) {
+            showNotification('Error updating star state', 'error');
+        }
+    });
+
+    // Mark as Unread in Detail View
+    detailUnreadBtn.addEventListener('click', async () => {
+        if (!currentEmailId) return;
+        const email = emailsData.find(e => e.id === currentEmailId);
+        if (!email) return;
+        
+        try {
+            const res = await window.pywebview.api.mark_as_read(currentEmailId, currentFolder, false);
+            if (res.success) {
+                email.unread = true;
+                showNotification('Email marked as unread', 'success');
+                showPanel('list');
+                renderEmailList(searchInput.value.toLowerCase().trim());
+            } else {
+                showNotification('Failed to update read state', 'error');
+            }
+        } catch (err) {
+            showNotification('Error marking as unread', 'error');
+        }
+    });
+
     deleteBtn.addEventListener('click', async () => {
         if (!currentEmailId) return;
         if (!confirm('Are you sure you want to delete this email?')) return;
@@ -196,10 +310,10 @@ document.addEventListener('DOMContentLoaded', () => {
         deleteBtn.disabled = true;
         
         try {
-            const data = await window.pywebview.api.delete_email(currentEmailId);
+            const data = await window.pywebview.api.delete_email(currentEmailId, currentFolder);
             
             if (data.success) {
-                showNotification('Email deleted', 'success');
+                showNotification('Email deleted successfully', 'success');
                 showPanel('list');
                 loadEmails();
             } else {
@@ -267,6 +381,20 @@ document.addEventListener('DOMContentLoaded', () => {
             sendBtn.innerHTML = originalHtml;
             sendBtn.disabled = false;
         }
+    });
+
+    // --- Sidebar Navigation ---
+    document.querySelectorAll('.sidebar-nav .nav-item').forEach(item => {
+        item.addEventListener('click', (e) => {
+            e.preventDefault();
+            document.querySelectorAll('.sidebar-nav .nav-item').forEach(nav => nav.classList.remove('active'));
+            item.classList.add('active');
+            
+            currentFolder = item.getAttribute('data-folder');
+            document.getElementById('folder-title').textContent = folderNames[currentFolder];
+            
+            loadEmails();
+        });
     });
 
     // --- Utilities ---

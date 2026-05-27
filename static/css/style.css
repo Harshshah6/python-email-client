@@ -620,3 +620,63 @@ textarea:focus {
 @keyframes fadeOut {
     to { opacity: 0; transform: translateY(-10px); }
 }
+
+/* Unread & Starred Styles */
+.email-item.unread {
+    border-left: 3px solid var(--accent);
+    padding-left: calc(1.5rem - 3px);
+    background: rgba(59, 130, 246, 0.03);
+}
+
+.email-item.unread .email-sender span:first-child {
+    font-weight: 700;
+    color: var(--text-primary);
+}
+
+.email-item.unread .email-subject {
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+/* Inline Star Button in List Item */
+.email-item-star {
+    color: var(--text-secondary);
+    cursor: pointer;
+    transition: var(--transition);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 4px;
+    border-radius: 50%;
+    margin-right: 0.25rem;
+}
+
+.email-item-star:hover {
+    color: #fbbf24;
+    background: rgba(255, 255, 255, 0.05);
+}
+
+.email-item-star.starred {
+    color: #fbbf24;
+    fill: #fbbf24;
+}
+
+/* Detail View Star Button */
+.star-btn {
+    color: var(--text-secondary);
+    transition: var(--transition);
+}
+
+.star-btn:hover {
+    color: #fbbf24 !important;
+}
+
+.star-btn.starred {
+    color: #fbbf24 !important;
+    fill: #fbbf24;
+}
+
+.btn-icon.star-btn.starred svg {
+    fill: #fbbf24;
+}
+
